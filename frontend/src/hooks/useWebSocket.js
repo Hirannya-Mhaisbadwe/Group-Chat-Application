@@ -86,9 +86,16 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
       ws.close();
     };
   }, [username]);
-  const sendMessage = useCallback((text) => {
+  const sendMessage = useCallback((text, replyTo = null) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'message', message: text }));
+      const payload = { type: 'message', message: text };
+      if (replyTo) {
+        payload.reply_to = {
+          username: replyTo.username,
+          message: replyTo.message,
+        };
+      }
+      wsRef.current.send(JSON.stringify(payload));
     }
   }, []);
   const leaveChat = useCallback(() => {

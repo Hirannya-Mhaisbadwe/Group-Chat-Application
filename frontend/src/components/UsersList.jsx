@@ -1,4 +1,4 @@
-export default function UsersList({ users, count }) {
+export default function UsersList({ users, count, onUserClick }) {
   return (
     <aside className="users-panel">
       <div className="users-panel__header">
@@ -17,7 +17,20 @@ export default function UsersList({ users, count }) {
 
       <ul className="users-list" aria-label="Online users">
         {users.map((user) => (
-          <li key={user} className="user-item">
+          <li
+            key={user}
+            className={`user-item ${onUserClick ? 'user-item--clickable' : ''}`}
+            onClick={() => onUserClick && onUserClick(user)}
+            title={`Mention @${user}`}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if ((e.key === 'Enter' || e.key === ' ') && onUserClick) {
+                e.preventDefault();
+                onUserClick(user);
+              }
+            }}
+          >
             <span className="user-dot" />
             <span className="user-name">{user}</span>
           </li>

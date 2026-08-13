@@ -21,6 +21,8 @@ clients: Dict[str, dict] = {}
 known_sessions: Dict[str, float] = {}
 message_history: list = []
 MAX_HISTORY = 100
+last_disconnect_time: float = 0.0
+disconnect_tasks: Dict[str, asyncio.Task] = {}
 
 
 def utc_now() -> str:
@@ -73,6 +75,7 @@ def _clear_room():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global last_disconnect_time
     await websocket.accept()
 
     session_token: Optional[str] = None
@@ -92,9 +95,36 @@ async def websocket_endpoint(websocket: WebSocket):
         if not session_token or not username:
             await websocket.close(code=1008)
             return
-        #   If this session_token already has an active connection
-        #   (another tab), close the old one silently and take over.
+        import time
+
+        # If the room was completely empty, check if we should clear stale history
+        if not clients:
+            # Clear history if it's been empty for > 5 minutes
+            if time.time() - last_disconnect_time >= 300:
+                _clear_room()
+                known_sessions.clear()
+
+        # Cancel any pending disconnect task for this session
+        has_actually_disconnected = True
+        if session_token in disconnect_tasks:
+            task = disconnect_tasks[session_token]
+            if not task.done():
+                task.cancel()
+                has_actually_disconnected = False
+            del disconnect_tasks[session_token]
+        else:
+            if session_token not in known_sessions:
+                has_actually_disconnected = False
+
+        # Determine if this is a reconnect or tab replacement
+        is_reconnect = False
+        is_replacement = False
+
         if session_token in clients:
+            is_reconnect = True
+            is_replacement = True
+            #   If this session_token already has an active connection
+            #   (another tab), close the old one silently and take over.
             old_ws = clients[session_token]["websocket"]
             try:
                 await old_ws.send_text(json.dumps({
@@ -104,25 +134,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 await old_ws.close(code=4000)
             except Exception:
                 pass
-        import time
-        is_reconnect = False
-        last_active = known_sessions.get(session_token, 0)
-        # If the session was active in the last 5 minutes (300 seconds)
-        if time.time() - last_active < 300:
-            is_reconnect = True
+        else:
+            last_active = known_sessions.get(session_token, 0)
+            if time.time() - last_active < 300:
+                is_reconnect = True
         
-        # Reset the timer
+        # Register the client
         known_sessions[session_token] = time.time()
         clients[session_token] = {"websocket": websocket, "username": username}
         print(f"[+] {username} connected  (token …{session_token[-8:]})")
         await _send(websocket, {"type": "joined", "username": username})
 
-        # Send history ONLY if they are reconnecting or replacing a tab
+        # Send message history
         if is_reconnect:
             for msg in message_history:
                 await _send(websocket, msg)
+            
+            # If they disconnected previously (not just replacing active tab or fast refreshing), let others know they reconnected
+            if not is_replacement and has_actually_disconnected:
+                reconnect_event = {
+                    "type": "system",
+                    "message": f"{username} reconnected",
+                    "timestamp": utc_now(),
+                }
+                add_to_history(reconnect_event)
+                await broadcast(reconnect_event, exclude_token=session_token)
         else:
-            # Only broadcast join event if they are genuinely new
+            # Genuine new join
             join_event = {
                 "type": "system",
                 "message": f"{username} joined the chat",
@@ -144,6 +182,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "message": data.get("message", ""),
                     "timestamp": utc_now(),
                 }
+                if "reply_to" in data:
+                    chat_msg["reply_to"] = data["reply_to"]
                 add_to_history(chat_msg)
                 await broadcast_all(chat_msg)
 
@@ -164,6 +204,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await push_user_list()
 
                 if not clients:
+                    last_disconnect_time = time.time()
                     _clear_room()
 
                 break  # exit loop, finally will not re-broadcast
@@ -182,25 +223,30 @@ async def websocket_endpoint(websocket: WebSocket):
             and clients[session_token]["websocket"] is websocket
         ):
             del clients[session_token]
-            import time
-            if session_token not in known_sessions:
-                known_sessions[session_token] = time.time()
-            else:
-                known_sessions[session_token] = time.time()
+            known_sessions[session_token] = time.time()
             print(f"[-] {username} disconnected  (token …{session_token[-8:]})")
 
-            disconnect_event = {
-                "type": "system",
-                "message": f"{username} disconnected",
-                "timestamp": utc_now(),
-            }
-            add_to_history(disconnect_event)
+            # Start a delayed disconnect task so we don't spam disconnect/reconnect messages on page refresh
+            async def delayed_disconnect():
+                try:
+                    await asyncio.sleep(6.0)  # Wait 6 seconds for potential reconnect
+                    # Broadcast disconnect event
+                    disconnect_event = {
+                        "type": "system",
+                        "message": f"{username} disconnected",
+                        "timestamp": utc_now(),
+                    }
+                    add_to_history(disconnect_event)
+                    await broadcast_all(disconnect_event)
+                    await push_user_list()
 
-            try:
-                await broadcast_all(disconnect_event)
-                await push_user_list()
-            except Exception:
-                pass
+                    # If the room is now empty, record disconnect time so we can clear history later if no one returns
+                    if not clients:
+                        global last_disconnect_time
+                        last_disconnect_time = time.time()
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    disconnect_tasks.pop(session_token, None)
 
-            if not clients:
-                _clear_room()
+            disconnect_tasks[session_token] = asyncio.create_task(delayed_disconnect())
