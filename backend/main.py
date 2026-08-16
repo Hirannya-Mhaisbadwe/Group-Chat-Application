@@ -151,12 +151,18 @@ def save_message_to_db(room_id, msg_type, sender, message, ciphertext, nonce, si
     conn.commit()
     conn.close()
 
-def get_history_from_db(room_id: str = "default"):
+def get_history_from_db(room_id: str = "default", since: Optional[str] = None):
     conn = get_db()
-    rows = conn.execute("""
-    SELECT type, sender, message, ciphertext, nonce, signature, public_key, timestamp
-    FROM messages WHERE room_id = ? ORDER BY id ASC
-    """, (room_id,)).fetchall()
+    if since:
+        rows = conn.execute("""
+        SELECT type, sender, message, ciphertext, nonce, signature, public_key, timestamp
+        FROM messages WHERE room_id = ? AND timestamp >= ? ORDER BY id ASC
+        """, (room_id, since)).fetchall()
+    else:
+        rows = conn.execute("""
+        SELECT type, sender, message, ciphertext, nonce, signature, public_key, timestamp
+        FROM messages WHERE room_id = ? ORDER BY id ASC
+        """, (room_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -276,8 +282,8 @@ async def push_user_list():
 def add_system_event(msg_type: str, message: str, timestamp: str):
     save_message_to_db("default", msg_type, "", message, "", "", "", "", timestamp)
 
-async def send_history(websocket: WebSocket, room_id: str = "default"):
-    rows = get_history_from_db(room_id)
+async def send_history(websocket: WebSocket, room_id: str = "default", since: Optional[str] = None):
+    rows = get_history_from_db(room_id, since=since)
     for row in rows:
         if row["type"] == "message":
             try:
@@ -385,8 +391,10 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[+] {username} connected  (token …{session_token[-8:]})")
         await _send(websocket, {"type": "joined", "username": username})
 
-        # Send history to joining client
-        await send_history(websocket, "default")
+        # Send history — only messages from AFTER this user registered
+        user_record = db_get_user(username)
+        user_since = user_record["created_at"] if user_record else None
+        await send_history(websocket, "default", since=user_since)
 
         # Broadcast join/reconnect event
         if is_reconnect:
