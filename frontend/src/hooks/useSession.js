@@ -13,9 +13,7 @@ const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export function getOrCreateSessionToken() {
   let token = localStorage.getItem("chat_session_token");
   if (!token) {
-    token = crypto.randomUUID
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).substring(2)}`;
+    token = crypto.randomUUID();
     localStorage.setItem("chat_session_token", token);
   }
   return token;
