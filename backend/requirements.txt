@@ -2,3 +2,6 @@ fastapi
 websockets
 uvicorn[standard]
 cryptography
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
