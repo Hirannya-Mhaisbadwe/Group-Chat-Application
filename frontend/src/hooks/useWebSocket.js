@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { getOrCreateSessionToken, clearSession } from './useSession';
+import { generateSigningKeyPair, exportPublicKeyHex, signMessage } from '../utils/crypto';
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws';
 
@@ -25,6 +26,7 @@ export const WS_STATUS = {
  */
 export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisconnected } = {}) {
   const wsRef = useRef(null);
+  const keyPairRef = useRef(null);
   const [status, setStatus] = useState(WS_STATUS.IDLE);
 
   // Stable refs so the WS callbacks don't capture stale closures
@@ -32,72 +34,103 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
   useEffect(() => {
     cbRef.current = { onMessage, onJoined, onReplaced, onDisconnected };
   });
+
   useEffect(() => {
     if (!username) return;
 
+    let active = true;
     const sessionToken = getOrCreateSessionToken();
     setStatus(WS_STATUS.CONNECTING);
 
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
+    const initCryptoAndConnect = async () => {
+      try {
+        const keys = await generateSigningKeyPair();
+        if (!active) return;
+        keyPairRef.current = keys;
+        const pubKey = await exportPublicKeyHex(keys.publicKey);
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'join',
-        session_token: sessionToken,
-        username,
-      }));
-    };
+        const ws = new WebSocket(WS_URL);
+        wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            type: 'join',
+            session_token: sessionToken,
+            username,
+            public_key: pubKey,
+          }));
+        };
 
-      if (data.type === 'joined') {
-        setStatus(WS_STATUS.CONNECTED);
-        cbRef.current.onJoined?.(data);
-        return;
-      }
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
 
-      if (data.type === 'replaced') {
-        setStatus(WS_STATUS.REPLACED);
-        cbRef.current.onReplaced?.(data);
-        return;
-      }
+          if (data.type === 'joined') {
+            setStatus(WS_STATUS.CONNECTED);
+            cbRef.current.onJoined?.(data);
+            return;
+          }
 
-      cbRef.current.onMessage?.(data);
-    };
+          if (data.type === 'replaced') {
+            setStatus(WS_STATUS.REPLACED);
+            cbRef.current.onReplaced?.(data);
+            return;
+          }
 
-    ws.onclose = (event) => {
-      // code 4000 = replaced by another tab (we handled it above already)
-      if (event.code !== 4000) {
+          cbRef.current.onMessage?.(data);
+        };
+
+        ws.onclose = (event) => {
+          if (event.code !== 4000) {
+            setStatus(WS_STATUS.DISCONNECTED);
+            cbRef.current.onDisconnected?.();
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.error('[WS] error:', err);
+          setStatus(WS_STATUS.DISCONNECTED);
+        };
+      } catch (error) {
+        console.error('[WS] initialization error:', error);
         setStatus(WS_STATUS.DISCONNECTED);
-        cbRef.current.onDisconnected?.();
       }
     };
 
-    ws.onerror = (err) => {
-      console.error('[WS] error:', err);
-      setStatus(WS_STATUS.DISCONNECTED);
-    };
+    initCryptoAndConnect();
 
     return () => {
-      // Cleanup on unmount or username change — close silently
-      ws.onclose = null;
-      ws.close();
+      active = false;
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
     };
   }, [username]);
-  const sendMessage = useCallback((text, replyTo = null) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const payload = { type: 'message', message: text };
-      if (replyTo) {
-        payload.reply_to = {
-          username: replyTo.username,
-          message: replyTo.message,
+
+  const sendMessage = useCallback(async (text, replyTo = null) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN && keyPairRef.current) {
+      try {
+        const signature = await signMessage(keyPairRef.current.privateKey, text);
+        const pubKeyHex = await exportPublicKeyHex(keyPairRef.current.publicKey);
+        const payload = {
+          type: 'message',
+          message: text,
+          signature: signature,
+          public_key: pubKeyHex,
         };
+        if (replyTo) {
+          payload.reply_to = {
+            username: replyTo.username,
+            message: replyTo.message,
+          };
+        }
+        wsRef.current.send(JSON.stringify(payload));
+      } catch (err) {
+        console.error('[WS] Failed to sign/send message:', err);
       }
-      wsRef.current.send(JSON.stringify(payload));
     }
   }, []);
+
   const leaveChat = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'leave' }));
@@ -110,3 +143,4 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
 
   return { status, sendMessage, leaveChat };
 }
+

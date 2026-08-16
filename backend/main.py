@@ -15,14 +15,106 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-#  In-memory state
-#  clients: session_token → {websocket, username}
+import os
+import sqlite3
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+# In-memory state
+# clients: session_token → {websocket, username}
 clients: Dict[str, dict] = {}
 known_sessions: Dict[str, float] = {}
-message_history: list = []
-MAX_HISTORY = 100
-last_disconnect_time: float = 0.0
 disconnect_tasks: Dict[str, asyncio.Task] = {}
+last_disconnect_time: float = 0.0
+
+KEY_FILE = "secret.key"
+
+def get_aes_key() -> bytes:
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "rb") as f:
+            return f.read()
+    else:
+        key = AESGCM.generate_key(bit_length=256)
+        with open(KEY_FILE, "wb") as f:
+            f.write(key)
+        return key
+
+AES_KEY = get_aes_key()
+
+def init_db():
+    conn = sqlite3.connect("chat.db")
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_id TEXT,
+        type TEXT,
+        sender TEXT,
+        message TEXT,
+        ciphertext TEXT,
+        nonce TEXT,
+        signature TEXT,
+        public_key TEXT,
+        timestamp TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def save_message_to_db(room_id: str, msg_type: str, sender: str, message: str, ciphertext: str, nonce: str, signature: str, public_key: str, timestamp: str):
+    conn = sqlite3.connect("chat.db")
+    conn.execute("""
+    INSERT INTO messages (room_id, type, sender, message, ciphertext, nonce, signature, public_key, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (room_id, msg_type, sender, message, ciphertext, nonce, signature, public_key, timestamp))
+    conn.commit()
+    conn.close()
+
+def get_history_from_db(room_id: str = "default"):
+    conn = sqlite3.connect("chat.db")
+    cursor = conn.execute("""
+    SELECT type, sender, message, ciphertext, nonce, signature, public_key, timestamp
+    FROM messages
+    WHERE room_id = ?
+    ORDER BY id ASC
+    """, (room_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+from cryptography.hazmat.primitives.serialization import load_der_public_key
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes
+
+def verify_signature(pub_key_hex: str, signature_hex: str, message: str) -> bool:
+    if not pub_key_hex or not signature_hex:
+        return False
+    try:
+        pub_key_bytes = bytes.fromhex(pub_key_hex)
+        public_key = load_der_public_key(pub_key_bytes)
+        signature = bytes.fromhex(signature_hex)
+        public_key.verify(
+            signature,
+            message.encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
+        return True
+    except Exception as e:
+        print(f"[!] Signature verification failed: {e}")
+        return False
+
+def encrypt_message(aes_key: bytes, message: str) -> tuple[str, str]:
+    aes = AESGCM(aes_key)
+    nonce = os.urandom(12)
+    ciphertext = aes.encrypt(nonce, message.encode(), None)
+    return ciphertext.hex(), nonce.hex()
+
+def decrypt_message(aes_key: bytes, ciphertext_hex: str, nonce_hex: str) -> str:
+    aes = AESGCM(aes_key)
+    ciphertext = bytes.fromhex(ciphertext_hex)
+    nonce = bytes.fromhex(nonce_hex)
+    plaintext = aes.decrypt(nonce, ciphertext, None)
+    return plaintext.decode()
 
 
 def utc_now() -> str:
@@ -63,14 +155,50 @@ async def push_user_list():
 
 
 def add_to_history(event: dict):
-    message_history.append(event)
-    if len(message_history) > MAX_HISTORY:
-        message_history.pop(0)
-
+    save_message_to_db(
+        "default",
+        event.get("type", "system"),
+        event.get("username", ""),
+        event.get("message", ""),
+        "",  # ciphertext
+        "",  # nonce
+        "",  # signature
+        "",  # public_key
+        event.get("timestamp", utc_now())
+    )
 
 def _clear_room():
-    message_history.clear()
-    print("[i] Room empty — history cleared")
+    print("[i] Room empty — database history remains persistent")
+
+async def send_history(websocket: WebSocket, room_id: str = "default"):
+    rows = get_history_from_db(room_id)
+    for row in rows:
+        msg_type, sender, message, ciphertext_hex, nonce_hex, signature_hex, public_key_hex, timestamp = row
+        if msg_type == "message":
+            try:
+                # 1. Decrypt ciphertext using AES-GCM (verifies integrity)
+                decrypted_msg = decrypt_message(AES_KEY, ciphertext_hex, nonce_hex)
+                
+                # 2. Verify signature using the sender's public key (verifies authenticity)
+                if not verify_signature(public_key_hex, signature_hex, decrypted_msg):
+                    print(f"[!] Warning: History message signature verification failed for sender {sender}")
+                    decrypted_msg = f"[Tampered Message: Signature verification failed] (Was: {decrypted_msg})"
+            except Exception as e:
+                print(f"[!] Error decrypting/verifying history message: {e}")
+                decrypted_msg = "[Tampered Message: Integrity check failed]"
+            
+            await _send(websocket, {
+                "type": "message",
+                "username": sender,
+                "message": decrypted_msg,
+                "timestamp": timestamp
+            })
+        elif msg_type == "system":
+            await _send(websocket, {
+                "type": "system",
+                "message": message,
+                "timestamp": timestamp
+            })
 #  WebSocket endpoint
 
 @app.websocket("/ws")
@@ -91,6 +219,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
         session_token = (data.get("session_token") or "").strip()
         username = (data.get("username") or "").strip()
+        public_key = (data.get("public_key") or "").strip()
 
         if not session_token or not username:
             await websocket.close(code=1008)
@@ -141,15 +270,14 @@ async def websocket_endpoint(websocket: WebSocket):
         
         # Register the client
         known_sessions[session_token] = time.time()
-        clients[session_token] = {"websocket": websocket, "username": username}
+        clients[session_token] = {"websocket": websocket, "username": username, "public_key": public_key}
         print(f"[+] {username} connected  (token …{session_token[-8:]})")
         await _send(websocket, {"type": "joined", "username": username})
 
         # Send message history
+        await send_history(websocket, "default")
+        
         if is_reconnect:
-            for msg in message_history:
-                await _send(websocket, msg)
-            
             # If they disconnected previously (not just replacing active tab or fast refreshing), let others know they reconnected
             if not is_replacement and has_actually_disconnected:
                 reconnect_event = {
@@ -176,15 +304,30 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = data.get("type")
 
             if msg_type == "message":
+                msg_text = data.get("message", "")
+                sig_hex = data.get("signature", "")
+                pub_key_hex = data.get("public_key", "")
+
+                # Verify signature
+                if not verify_signature(pub_key_hex, sig_hex, msg_text):
+                    print(f"[!] Invalid signature from user {username}")
+                    continue
+
+                # Encrypt message before storing
+                ciphertext_hex, nonce_hex = encrypt_message(AES_KEY, msg_text)
+
+                # Store message in DB
+                timestamp = utc_now()
+                save_message_to_db("default", "message", username, "", ciphertext_hex, nonce_hex, sig_hex, pub_key_hex, timestamp)
+
                 chat_msg = {
                     "type": "message",
                     "username": username,
-                    "message": data.get("message", ""),
-                    "timestamp": utc_now(),
+                    "message": msg_text,
+                    "timestamp": timestamp,
                 }
                 if "reply_to" in data:
                     chat_msg["reply_to"] = data["reply_to"]
-                add_to_history(chat_msg)
                 await broadcast_all(chat_msg)
 
             elif msg_type == "leave":
