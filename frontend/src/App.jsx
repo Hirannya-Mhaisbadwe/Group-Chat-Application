@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Login from './components/Login';
 import ChatRoom from './components/ChatRoom';
-import { getSavedSession, saveSession, clearSession } from './hooks/useSession';
+import { getAccessToken, getStoredUsername, clearAuth } from './hooks/useAuth';
 
 // App states
 const VIEW = {
@@ -26,22 +26,26 @@ export default function App() {
   function toggleTheme() {
     setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
   }
+
   useEffect(() => {
-    const saved = getSavedSession();
-    if (saved) {
-      setUsername(saved.username);
+    const token = getAccessToken();
+    const savedUsername = getStoredUsername();
+    if (token && savedUsername) {
+      setUsername(savedUsername);
       setView(VIEW.CHAT);
     } else {
+      clearAuth();
       setView(VIEW.LOGIN);
     }
   }, []);
+
   function handleJoin(name) {
-    saveSession(name);
     setUsername(name);
     setView(VIEW.CHAT);
   }
+
   function handleLeave() {
-    clearSession();
+    clearAuth();
     setUsername(null);
     setView(VIEW.LOGIN);
   }
@@ -67,4 +71,3 @@ export default function App() {
     />
   );
 }
-
