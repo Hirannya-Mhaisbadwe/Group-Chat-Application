@@ -29,29 +29,100 @@
 ## 🚀 Running Locally
 
 ### 1. Start the Backend
-Open a terminal and navigate to the `backend` directory:
 ```bash
 cd backend
-```
-Install the requirements and start the Uvicorn server:
-```bash
 pip install -r requirements.txt
 uvicorn main:app --reload
 ```
-*The backend will run on `http://127.0.0.1:8000` (WebSocket on `ws://127.0.0.1:8000/ws`).*
+*The backend will run on `http://127.0.0.1:8000`.*
 
 ### 2. Start the Frontend
-Open a **new** terminal and navigate to the `frontend` directory:
 ```bash
 cd frontend
-```
-Install dependencies and start the Vite dev server:
-```bash
 npm install
 npm run dev
 ```
-*The frontend will run on `http://localhost:5173`. Open this in your browser to start chatting!*
+*Open `http://localhost:5173` in your browser to start chatting!*
 
-## 🌐 Deployment
-- **Frontend** is configured for 1-click deployment on [Vercel](https://vercel.com).
-- **Backend** is configured for easy deployment on [Render](https://render.com). Ensure the environment variable `VITE_WS_URL` is set in Vercel to point to your secure Render websocket URL (`wss://.../ws`).
+---
+
+## 🖥️ SSH Deployment Guide (University / Lab Setup)
+
+This section documents how to host NexChat across multiple SSH virtual machines on the same server, with one machine acting as the central host and all others connecting to it.
+
+### 🔧 Step 1 — On the HOST Machine (One person only)
+
+The host machine is the one that runs the backend and serves the frontend. All others connect to it.
+
+**1a. Clone the repository:**
+```bash
+git clone https://github.com/Aj1359/Group-Chat-Application.git
+cd Group-Chat-Application/backend
+```
+
+**1b. Install Python dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+**1c. Start the backend permanently in the background:**
+```bash
+nohup python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+```
+
+**1d. Build the frontend on your local computer** (run this on your own Windows/Mac laptop, not the SSH):
+```bash
+cd frontend
+echo "VITE_WS_URL=ws://localhost:8000/ws" > .env.production
+npm run build
+```
+
+**1e. Copy the built frontend to your SSH machine** (run on your local laptop):
+```bash
+scp -P <YOUR_PORT> -r dist student@10.1.75.51:~/dist
+```
+
+**1f. Serve the frontend permanently in the background:**
+```bash
+nohup python3 -m http.server 5173 --directory ~/dist > frontend.log 2>&1 &
+```
+
+✅ Your machine is now hosting both the backend (port 8000) and the frontend (port 5173).
+
+---
+
+### 👥 Step 2 — On Every Other Machine (All other users)
+
+Each other group member does the following **on their own personal laptop** (not inside an SSH window):
+
+**2a. Open a terminal (Command Prompt or PowerShell) and run:**
+```bash
+ssh -p <YOUR_OWN_SSH_PORT> -L 5173:localhost:5173 -L 8000:localhost:8000 student@10.1.75.51
+```
+> Replace `<YOUR_OWN_SSH_PORT>` with your personal SSH port (e.g., 2229, 2225, 2221).
+> Enter your password when prompted. **Keep this terminal window open.**
+
+**2b. Open your browser and navigate to:**
+```
+http://localhost:5173
+```
+
+The SSH tunnel forwards your `localhost:5173` and `localhost:8000` directly through your VM to the host machine. You will automatically join the same chat room as everyone else!
+
+---
+
+### 📋 Quick Reference: Port Numbers
+
+| Person | SSH Port | Role |
+|--------|----------|------|
+| Aditya | 2217 | Host (Backend + Frontend) |
+| Hirannya | 2229 | Connect via tunnel |
+| Sarah | 2225 | Connect via tunnel |
+| Sanjani | 2221 | Connect via tunnel |
+
+---
+
+## 🌐 Public Deployment
+
+- **Frontend**: Deployed on [Vercel](https://group-chat-application-beta.vercel.app)
+- **Backend**: Deployed on [Render](https://render.com)

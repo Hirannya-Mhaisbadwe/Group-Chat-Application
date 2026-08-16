@@ -1,10 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWebSocket, WS_STATUS } from '../hooks/useWebSocket';
+import { useCrypto } from '../hooks/useCrypto';
 import UsersList from './UsersList';
 import Message from './Message';
 import { refreshSession } from '../hooks/useSession';
 
-export default function ChatRoom({ username, onLeave, theme, onToggleTheme }) {
+function formatSince(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+export default function ChatRoom({ username, authToken, onLeave, theme, onToggleTheme }) {
+  // Crypto: generate ECDSA keypair on mount for signing messages
+  const crypto = useCrypto();
+
+  const [unreadBanner, setUnreadBanner] = useState(null); // { count, since }
   const [messages, setMessages] = useState([]);
   const [users, setUsers] = useState([]);
   const [userCount, setUserCount] = useState(0);
@@ -33,8 +44,16 @@ export default function ChatRoom({ username, onLeave, theme, onToggleTheme }) {
     setIsReplaced(true);
   }, []);
 
-  const { status, sendMessage, leaveChat } = useWebSocket(username, {
+  const handleJoined = useCallback((data) => {
+    // Show unread banner if there are new messages since last visit
+    if (data.unread_count > 0 && data.since) {
+      setUnreadBanner({ count: data.unread_count, since: data.since });
+    }
+  }, []);
+
+  const { status, sendMessage, leaveChat } = useWebSocket(username, crypto, authToken, {
     onMessage: handleMessage,
+    onJoined: handleJoined,
     onReplaced: handleReplaced,
     onDisconnected: () => {
       setMessages((prev) => [
@@ -218,6 +237,12 @@ export default function ChatRoom({ username, onLeave, theme, onToggleTheme }) {
 
         {/* Messages */}
         <section className="messages" id="messages-container" aria-live="polite">
+          {unreadBanner && (
+            <div className="unread-banner">
+              <span>🔔 {unreadBanner.count} new message{unreadBanner.count !== 1 ? 's' : ''} since {formatSince(unreadBanner.since)}</span>
+              <button className="unread-banner__close" onClick={() => setUnreadBanner(null)} aria-label="Dismiss">✕</button>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="messages__empty">
               <span>👋</span>

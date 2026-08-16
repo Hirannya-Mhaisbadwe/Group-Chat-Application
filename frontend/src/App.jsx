@@ -3,21 +3,15 @@ import Login from './components/Login';
 import ChatRoom from './components/ChatRoom';
 import { getSavedSession, saveSession, clearSession } from './hooks/useSession';
 
-// App states
-const VIEW = {
-  LOADING: 'loading',
-  LOGIN: 'login',
-  CHAT: 'chat',
-};
+const VIEW = { LOADING: 'loading', LOGIN: 'login', CHAT: 'chat' };
 
 export default function App() {
-  const [view, setView] = useState(VIEW.LOADING);
-  const [username, setUsername] = useState(null);
-  const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('chat_theme') || 'dark';
-  });
+  const [view, setView]         = useState(VIEW.LOADING);
+  const [userId, setUserId]     = useState(null);
+  const [displayName, setDisplayName] = useState(null);
+  const [authToken, setAuthToken] = useState(null);
+  const [theme, setTheme]       = useState(() => localStorage.getItem('chat_theme') || 'dark');
 
-  // Apply data-theme attribute to <html> whenever theme changes
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('chat_theme', theme);
@@ -26,23 +20,32 @@ export default function App() {
   function toggleTheme() {
     setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
   }
+
   useEffect(() => {
     const saved = getSavedSession();
     if (saved) {
-      setUsername(saved.username);
+      setUserId(saved.userId);
+      setDisplayName(saved.displayName);
+      setAuthToken(saved.authToken);
       setView(VIEW.CHAT);
     } else {
       setView(VIEW.LOGIN);
     }
   }, []);
-  function handleJoin(name) {
-    saveSession(name);
-    setUsername(name);
+
+  function handleJoin(uid, dname, token) {
+    saveSession(uid, dname, token);
+    setUserId(uid);
+    setDisplayName(dname);
+    setAuthToken(token);
     setView(VIEW.CHAT);
   }
+
   function handleLeave() {
     clearSession();
-    setUsername(null);
+    setUserId(null);
+    setDisplayName(null);
+    setAuthToken(null);
     setView(VIEW.LOGIN);
   }
 
@@ -60,11 +63,11 @@ export default function App() {
 
   return (
     <ChatRoom
-      username={username}
+      username={displayName || userId} // display name preferred for chat
+      authToken={authToken}
       onLeave={handleLeave}
       theme={theme}
       onToggleTheme={toggleTheme}
     />
   );
 }
-

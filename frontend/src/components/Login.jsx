@@ -1,28 +1,68 @@
 import { useState, useRef } from 'react';
 
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+
 export default function Login({ onJoin, theme, onToggleTheme }) {
-  const [name, setName] = useState('');
-  const [error, setError] = useState('');
+  const [mode, setMode]       = useState('login');   // 'login' | 'register'
+  const [userId, setUserId]   = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError]     = useState('');
+  const [loading, setLoading] = useState(false);
   const inputRef = useRef(null);
 
-  function handleSubmit(e) {
+  function clearError() { if (error) setError(''); }
+
+  async function handleSubmit(e) {
     e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setError('Please enter a username.');
-      inputRef.current?.focus();
-      return;
+    const uid = userId.trim();
+    const dname = displayName.trim();
+    const pwd = password.trim();
+
+    if (!uid) { setError('Please enter a User ID.'); inputRef.current?.focus(); return; }
+    if (uid.length > 20) { setError('User ID must be 20 characters or fewer.'); return; }
+    
+    if (mode === 'register') {
+      if (!dname) { setError('Please enter a Display Name.'); return; }
+      if (dname.length > 30) { setError('Display Name must be 30 characters or fewer.'); return; }
+      if (pwd.length < 6) { setError('Password must be at least 6 characters.'); return; }
+      if (!/\d/.test(pwd)) { setError('Password must contain at least one number.'); return; }
+    } else {
+      if (!pwd) { setError('Please enter your password.'); return; }
     }
-    if (trimmed.length > 20) {
-      setError('Username must be 20 characters or fewer.');
-      return;
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const endpoint = mode === 'register' ? '/register' : '/login';
+      const bodyPayload = mode === 'register' 
+        ? { user_id: uid, display_name: dname, password: pwd }
+        : { user_id: uid, password: pwd };
+
+      const res = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.detail || 'Something went wrong. Please try again.');
+        return;
+      }
+
+      onJoin(data.user_id, data.display_name, data.token);
+    } catch {
+      setError('Could not connect to server. Make sure the backend is running.');
+    } finally {
+      setLoading(false);
     }
-    onJoin(trimmed);
   }
 
   return (
     <div className="login-wrapper">
-      {/* Theme toggle — top-right */}
       <button
         id="theme-toggle-login"
         className="btn--theme login-theme-toggle"
@@ -38,32 +78,88 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
         <h1 className="login-title">Welcome to NexChat</h1>
         <p className="login-subtitle">Real-time messaging, instantly.</p>
 
+        <div className="auth-tabs">
+          <button
+            id="tab-login"
+            className={`auth-tab ${mode === 'login' ? 'auth-tab--active' : ''}`}
+            onClick={() => { setMode('login'); setError(''); }}
+            type="button"
+          >
+            Login
+          </button>
+          <button
+            id="tab-register"
+            className={`auth-tab ${mode === 'register' ? 'auth-tab--active' : ''}`}
+            onClick={() => { setMode('register'); setError(''); }}
+            type="button"
+          >
+            Register
+          </button>
+        </div>
+
         <form className="login-form" onSubmit={handleSubmit} noValidate>
-          <input
-            id="username-input"
-            ref={inputRef}
-            className={`login-input ${error ? 'login-input--error' : ''}`}
-            type="text"
-            placeholder="Choose a username…"
-            value={name}
-            maxLength={20}
-            autoComplete="off"
-            autoFocus
-            onChange={(e) => {
-              setName(e.target.value);
-              if (error) setError('');
-            }}
-          />
+          <div className="input-group">
+            <input
+              id="userid-input"
+              ref={inputRef}
+              className={`login-input ${error ? 'login-input--error' : ''}`}
+              type="text"
+              placeholder="User ID (e.g. aditya123)"
+              value={userId}
+              maxLength={20}
+              autoComplete="username"
+              autoFocus
+              onChange={(e) => { setUserId(e.target.value.toLowerCase().replace(/\s/g, '')); clearError(); }}
+            />
+            {mode === 'register' && <span className="input-hint">Unique identifier used for logging in (no spaces).</span>}
+          </div>
+
+          {mode === 'register' && (
+            <div className="input-group">
+              <input
+                id="displayname-input"
+                className={`login-input ${error ? 'login-input--error' : ''}`}
+                type="text"
+                placeholder="Display Name (e.g. Aditya)"
+                value={displayName}
+                maxLength={30}
+                onChange={(e) => { setDisplayName(e.target.value); clearError(); }}
+              />
+              <span className="input-hint">The name everyone else will see in chat.</span>
+            </div>
+          )}
+
+          <div className="input-group">
+            <input
+              id="password-input"
+              className={`login-input ${error ? 'login-input--error' : ''}`}
+              type="password"
+              placeholder="Password"
+              value={password}
+              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              onChange={(e) => { setPassword(e.target.value); clearError(); }}
+            />
+            {mode === 'register' && <span className="input-hint">Min 6 chars. Must contain 1 number.</span>}
+          </div>
+
           {error && <p className="login-error">{error}</p>}
 
-          <button id="join-btn" className="btn btn--primary btn--full" type="submit">
-            Join Chat
+          <button
+            id="auth-submit-btn"
+            className="btn btn--primary btn--full"
+            type="submit"
+            disabled={loading}
+          >
+            {loading ? 'Please wait…' : mode === 'register' ? 'Create Account' : 'Login'}
           </button>
         </form>
 
-        <p className="login-hint">Your session stays active for 5 minutes after you close the tab.</p>
+        <p className="login-hint">
+          {mode === 'login'
+            ? "Don't have an account? Click Register above."
+            : 'Already have an account? Click Login above.'}
+        </p>
       </div>
     </div>
   );
 }
-
