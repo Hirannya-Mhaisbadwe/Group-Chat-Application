@@ -1,3 +1,4 @@
+import { getOrCreateSigningKeyPair } from './hooks/useSigningKey';
 import { useState, useEffect } from 'react';
 import Login from './components/Login';
 import ChatRoom from './components/ChatRoom';
@@ -35,11 +36,17 @@ export default function App() {
       setView(VIEW.LOGIN);
     }
   }, []);
-  function handleJoin(name) {
+  async function handleJoin(name) {
+  try {
+    await getOrCreateSigningKeyPair();
+
     saveSession(name);
     setUsername(name);
     setView(VIEW.CHAT);
+  } catch (error) {
+    console.error('Failed to create signing key:', error);
   }
+}
   function handleLeave() {
     clearSession();
     setUsername(null);

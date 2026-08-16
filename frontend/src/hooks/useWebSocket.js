@@ -1,5 +1,11 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { getOrCreateSessionToken, clearSession } from './useSession';
+import {
+  getOrCreateSigningKeyPair,
+  signMessage,
+  getPublicSigningKey,
+  verifyMessage,
+} from './useSigningKey';
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws';
 
@@ -9,29 +15,39 @@ export const WS_STATUS = {
   CONNECTING: 'connecting',
   CONNECTED: 'connected',
   DISCONNECTED: 'disconnected',
-  REPLACED: 'replaced',   // same browser, different tab took over
+  REPLACED: 'replaced',
 };
 
 /**
  * useWebSocket
  *
- * @param {string|null} username  – Pass a username to open the connection,
- *                                  null to keep it closed.
+ * @param {string|null} username
  * @param {object} callbacks
- *   onMessage(msg)   – called for every incoming chat/system/users packet
- *   onJoined()       – called once the server confirms the join
- *   onReplaced()     – called when another tab in the same browser takes over
- *   onDisconnected() – called on unexpected disconnect
  */
-export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisconnected } = {}) {
+export function useWebSocket(
+  username,
+  { onMessage, onJoined, onReplaced, onDisconnected } = {}
+) {
   const wsRef = useRef(null);
   const [status, setStatus] = useState(WS_STATUS.IDLE);
 
-  // Stable refs so the WS callbacks don't capture stale closures
-  const cbRef = useRef({ onMessage, onJoined, onReplaced, onDisconnected });
-  useEffect(() => {
-    cbRef.current = { onMessage, onJoined, onReplaced, onDisconnected };
+  // Keep callbacks up to date without recreating the WebSocket
+  const cbRef = useRef({
+    onMessage,
+    onJoined,
+    onReplaced,
+    onDisconnected,
   });
+
+  useEffect(() => {
+    cbRef.current = {
+      onMessage,
+      onJoined,
+      onReplaced,
+      onDisconnected,
+    };
+  });
+
   useEffect(() => {
     if (!username) return;
 
@@ -41,15 +57,19 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
+    // Connection opened
     ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'join',
-        session_token: sessionToken,
-        username,
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'join',
+          session_token: sessionToken,
+          username,
+        })
+      );
     };
 
-    ws.onmessage = (event) => {
+    // Messages received
+    ws.onmessage = async (event) => {
       const data = JSON.parse(event.data);
 
       if (data.type === 'joined') {
@@ -64,49 +84,92 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
         return;
       }
 
+      // Verify signed chat messages
+      if (data.type === 'message' && data.signature && data.public_key) {
+        const isVerified = await verifyMessage(
+          data.message,
+          data.signature,
+          data.public_key
+        );
+
+        data.signature_verified = isVerified;
+      }
+
       cbRef.current.onMessage?.(data);
     };
 
+    // Connection closed
     ws.onclose = (event) => {
-      // code 4000 = replaced by another tab (we handled it above already)
+      // Code 4000 means another tab replaced this connection
       if (event.code !== 4000) {
         setStatus(WS_STATUS.DISCONNECTED);
         cbRef.current.onDisconnected?.();
       }
     };
 
+    // Connection error
     ws.onerror = (err) => {
       console.error('[WS] error:', err);
       setStatus(WS_STATUS.DISCONNECTED);
     };
 
+    // Cleanup
     return () => {
-      // Cleanup on unmount or username change — close silently
       ws.onclose = null;
       ws.close();
     };
   }, [username]);
-  const sendMessage = useCallback((text, replyTo = null) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const payload = { type: 'message', message: text };
+
+  // Send a signed message
+  const sendMessage = useCallback(async (text, replyTo = null) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+    try {
+      // Get this user's signing key
+      const { privateKey } = await getOrCreateSigningKeyPair();
+
+      // Create digital signature
+      const signature = await signMessage(text, privateKey);
+
+      // Get public key
+      const publicKey = getPublicSigningKey();
+
+      const payload = {
+        type: 'message',
+        message: text,
+        signature,
+        public_key: publicKey,
+      };
+
+      // Preserve existing reply functionality
       if (replyTo) {
         payload.reply_to = {
           username: replyTo.username,
           message: replyTo.message,
         };
       }
+
       wsRef.current.send(JSON.stringify(payload));
+    } catch (error) {
+      console.error('[Security] Failed to sign message:', error);
     }
   }, []);
+
+  // Leave chat
   const leaveChat = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'leave' }));
-      wsRef.current.onclose = null; // prevent disconnect event
+      wsRef.current.onclose = null;
       wsRef.current.close();
     }
+
     clearSession();
     setStatus(WS_STATUS.IDLE);
   }, []);
 
-  return { status, sendMessage, leaveChat };
+  return {
+    status,
+    sendMessage,
+    leaveChat,
+  };
 }

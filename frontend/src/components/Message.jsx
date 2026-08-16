@@ -53,6 +53,8 @@ export default function Message({ msg, currentUser, onReply }) {
           </div>
         )}
         <span className="msg__text">{renderMessageText(msg.message, currentUser)}</span>
+        
+
         {time && <span className="msg__time">{time}</span>}
       </div>
       <button

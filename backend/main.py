@@ -177,11 +177,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "message":
                 chat_msg = {
-                    "type": "message",
-                    "username": username,
-                    "message": data.get("message", ""),
-                    "timestamp": utc_now(),
-                }
+    "type": "message",
+    "username": username,
+    "message": data.get("message", ""),
+    "timestamp": utc_now(),
+    "signature": data.get("signature"),
+    "public_key": data.get("public_key"),
+}
                 if "reply_to" in data:
                     chat_msg["reply_to"] = data["reply_to"]
                 add_to_history(chat_msg)
