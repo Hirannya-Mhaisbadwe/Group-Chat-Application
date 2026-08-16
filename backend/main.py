@@ -45,7 +45,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # ─────────────────────────────────────────────────────────────
 # AES-GCM Key (persistent)
 # ─────────────────────────────────────────────────────────────
-KEY_FILE = "secret.key"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+if DATA_DIR != ".":
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+KEY_FILE = os.path.join(DATA_DIR, "secret.key")
 
 def get_aes_key() -> bytes:
     if os.path.exists(KEY_FILE):
@@ -62,7 +66,7 @@ AES_KEY = get_aes_key()
 # Database helpers
 # ─────────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(os.path.join(DATA_DIR, "chat.db"))
     conn.row_factory = sqlite3.Row
     return conn
 
