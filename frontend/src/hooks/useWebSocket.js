@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { getOrCreateSessionToken, clearSession } from './useSession';
 import { generateSigningKeyPair, exportPublicKeyHex, signMessage } from '../utils/crypto';
+import { getAccessToken, clearAuth } from './useAuth';
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws';
 
@@ -53,11 +54,13 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
         wsRef.current = ws;
 
         ws.onopen = () => {
+          const token = getAccessToken();
           ws.send(JSON.stringify({
             type: 'join',
             session_token: sessionToken,
             username,
             public_key: pubKey,
+            token,
           }));
         };
 
@@ -134,10 +137,11 @@ export function useWebSocket(username, { onMessage, onJoined, onReplaced, onDisc
   const leaveChat = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'leave' }));
-      wsRef.current.onclose = null; // prevent disconnect event
+      wsRef.current.onclose = null;
       wsRef.current.close();
     }
     clearSession();
+    clearAuth();
     setStatus(WS_STATUS.IDLE);
   }, []);
 
