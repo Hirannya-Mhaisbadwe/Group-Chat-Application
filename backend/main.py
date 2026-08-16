@@ -45,12 +45,27 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # ─────────────────────────────────────────────────────────────
 # AES-GCM Key (persistent)
 # ─────────────────────────────────────────────────────────────
-KEY_FILE = "secret.key"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+if DATA_DIR != ".":
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+KEY_FILE = os.path.join(DATA_DIR, "secret.key")
 
 def get_aes_key() -> bytes:
+    # 1. Try loading from environment variable first (essential for Render Free Tier)
+    env_key = os.environ.get("AES_KEY")
+    if env_key:
+        try:
+            return bytes.fromhex(env_key)
+        except ValueError:
+            return env_key.encode().ljust(32, b'\0')[:32]
+
+    # 2. Try loading from file
     if os.path.exists(KEY_FILE):
         with open(KEY_FILE, "rb") as f:
             return f.read()
+
+    # 3. Generate new key
     key = AESGCM.generate_key(bit_length=256)
     with open(KEY_FILE, "wb") as f:
         f.write(key)
@@ -62,7 +77,7 @@ AES_KEY = get_aes_key()
 # Database helpers
 # ─────────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(os.path.join(DATA_DIR, "chat.db"))
     conn.row_factory = sqlite3.Row
     return conn
 
