@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -9,9 +9,43 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
   const [password, setPassword] = useState('');
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
+  
+  // Realtime check state
+  const [isAvailable, setIsAvailable] = useState(null); // true, false, or null
+  const [checkingUsername, setCheckingUsername] = useState(false);
+  const debounceRef = useRef(null);
+
   const inputRef = useRef(null);
 
   function clearError() { if (error) setError(''); }
+
+  // Check username availability when typing in register mode
+  useEffect(() => {
+    if (mode !== 'register' || !userId) {
+      setIsAvailable(null);
+      return;
+    }
+
+    setCheckingUsername(true);
+    setIsAvailable(null);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_URL}/check-user/${encodeURIComponent(userId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setIsAvailable(data.available);
+        }
+      } catch (e) {
+        setIsAvailable(null);
+      } finally {
+        setCheckingUsername(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(debounceRef.current);
+  }, [userId, mode]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -23,6 +57,7 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
     if (uid.length > 20) { setError('User ID must be 20 characters or fewer.'); return; }
     
     if (mode === 'register') {
+      if (isAvailable === false) { setError('User ID is already taken.'); return; }
       if (!dname) { setError('Please enter a Display Name.'); return; }
       if (dname.length > 30) { setError('Display Name must be 30 characters or fewer.'); return; }
       if (pwd.length < 6) { setError('Password must be at least 6 characters.'); return; }
@@ -82,7 +117,7 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
           <button
             id="tab-login"
             className={`auth-tab ${mode === 'login' ? 'auth-tab--active' : ''}`}
-            onClick={() => { setMode('login'); setError(''); }}
+            onClick={() => { setMode('login'); setError(''); setIsAvailable(null); }}
             type="button"
           >
             Login
@@ -90,7 +125,7 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
           <button
             id="tab-register"
             className={`auth-tab ${mode === 'register' ? 'auth-tab--active' : ''}`}
-            onClick={() => { setMode('register'); setError(''); }}
+            onClick={() => { setMode('register'); setError(''); setIsAvailable(null); }}
             type="button"
           >
             Register
@@ -102,7 +137,7 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
             <input
               id="userid-input"
               ref={inputRef}
-              className={`login-input ${error ? 'login-input--error' : ''}`}
+              className={`login-input ${error || isAvailable === false ? 'login-input--error' : ''}`}
               type="text"
               placeholder="User ID (e.g. aditya123)"
               value={userId}
@@ -111,7 +146,19 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
               autoFocus
               onChange={(e) => { setUserId(e.target.value.toLowerCase().replace(/\s/g, '')); clearError(); }}
             />
-            {mode === 'register' && <span className="input-hint">Unique identifier used for logging in (no spaces).</span>}
+            {mode === 'register' && (
+              <span className="input-hint">
+                {checkingUsername ? (
+                  'Checking availability...'
+                ) : isAvailable === true ? (
+                  <span className="text-success">✔ Username available!</span>
+                ) : isAvailable === false ? (
+                  <span className="text-danger">✖ Username is taken.</span>
+                ) : (
+                  'Unique identifier used for logging in (no spaces).'
+                )}
+              </span>
+            )}
           </div>
 
           {mode === 'register' && (
@@ -148,7 +195,7 @@ export default function Login({ onJoin, theme, onToggleTheme }) {
             id="auth-submit-btn"
             className="btn btn--primary btn--full"
             type="submit"
-            disabled={loading}
+            disabled={loading || (mode === 'register' && isAvailable === false)}
           >
             {loading ? 'Please wait…' : mode === 'register' ? 'Create Account' : 'Login'}
           </button>

@@ -288,6 +288,19 @@ class LoginRequest(BaseModel):
     user_id: str
     password: str
 
+@app.get("/check-user/{user_id}")
+async def check_user(user_id: str):
+    user_id = user_id.strip().lower()
+    if not user_id:
+        return {"available": False}
+        
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        
+    return {"available": row is None}
+
 @app.post("/register")
 async def register(req: RegisterRequest):
     user_id = req.user_id.strip()

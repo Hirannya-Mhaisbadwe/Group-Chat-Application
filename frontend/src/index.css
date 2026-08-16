@@ -898,12 +898,21 @@ ul { list-style: none; }
   margin-bottom: 8px;
 }
 
+.text-success {
+  color: var(--clr-accent);
+}
+
+.text-danger {
+  color: var(--clr-danger);
+}
+
 .auth-tabs {
   display: flex;
   margin-bottom: 24px;
   background: var(--clr-surface-2);
   border-radius: 8px;
   padding: 4px;
+  width: 100%;
 }
 
 .auth-tab {
