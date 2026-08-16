@@ -147,18 +147,68 @@ def get_history_from_db(room_id: str = "default"):
 
 # ─────────────────────────────────────────────────────────────
 # Crypto helpers
-# ─────────────────────────────────────────────────────────────
 def verify_signature(pub_key_hex: str, signature_hex: str, message: str) -> bool:
     if not pub_key_hex or not signature_hex:
         return False
+
     try:
         pub_key = load_der_public_key(bytes.fromhex(pub_key_hex))
-        pub_key.verify(bytes.fromhex(signature_hex), message.encode(), ec.ECDSA(hashes.SHA256()))
+
+        # Web Crypto API returns ECDSA signatures as raw r || s.
+        # Python cryptography expects DER-encoded ECDSA signatures.
+        signature_raw = bytes.fromhex(signature_hex)
+
+        if len(signature_raw) != 64:
+            print(f"[!] Invalid ECDSA signature length: {len(signature_raw)} bytes")
+            return False
+
+        r = int.from_bytes(signature_raw[:32], byteorder="big")
+        s = int.from_bytes(signature_raw[32:], byteorder="big")
+
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+        signature_der = encode_dss_signature(r, s)
+
+        pub_key.verify(
+            signature_der,
+            message.encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
+
         return True
+
+    except Exception as e:
+        print(f"[!] Signature verification failed: {repr(e)}")
+        return False
+# ─────────────────────────────────────────────────────────────
+
+    try:
+        pub_key = load_der_public_key(bytes.fromhex(pub_key_hex))
+
+        # Web Crypto API returns ECDSA signatures as raw r || s.
+        # Python cryptography expects ASN.1 DER encoding.
+        raw_signature = bytes.fromhex(signature_hex)
+
+        if len(raw_signature) != 64:
+            print(f"[!] Invalid ECDSA signature length: {len(raw_signature)}")
+            return False
+
+        r = int.from_bytes(raw_signature[:32], byteorder="big")
+        s = int.from_bytes(raw_signature[32:], byteorder="big")
+
+        der_signature = utils.encode_dss_signature(r, s)
+
+        pub_key.verify(
+            der_signature,
+            message.encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
+
+        return True
+
     except Exception as e:
         print(f"[!] Signature verification failed: {e}")
         return False
-
 def encrypt_message(message: str) -> tuple[str, str]:
     aes = AESGCM(AES_KEY)
     nonce = os.urandom(12)
@@ -391,15 +441,21 @@ async def websocket_endpoint(websocket: WebSocket):
             data = json.loads(raw_msg)
             msg_type = data.get("type")
 
-            if msg_type == "message":
-                msg_text = data.get("message", "")
-                sig_hex = data.get("signature", "")
-                pub_key_hex = data.get("public_key", "")
+             msg_text = data.get("message", "")
+            sig_hex = data.get("signature", "")
+            pub_key_hex = data.get("public_key", "")
 
-                # Verify signature (authenticity check)
-                if not verify_signature(pub_key_hex, sig_hex, msg_text):
-                    print(f"[!] Rejected message from {username} — invalid signature")
-                    continue
+            print(f"[DEBUG] message={msg_text!r}")
+            print(f"[DEBUG] signature length={len(sig_hex)}")
+            print(f"[DEBUG] public key length={len(pub_key_hex)}")
+
+            # Verify signature (authenticity check)
+            if not verify_signature(pub_key_hex, sig_hex, msg_text):
+                print(f"[!] Rejected message from {username} — invalid signature")
+                continue
+
+            # Encrypt before storing (confidentiality + integrity)
+            ciphertext_hex, nonce_hex = encrypt_message(msg_text)
 
                 # Encrypt before storing (confidentiality + integrity)
                 ciphertext_hex, nonce_hex = encrypt_message(msg_text)
