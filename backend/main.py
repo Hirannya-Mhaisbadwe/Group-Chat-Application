@@ -270,6 +270,12 @@ async def login(req: LoginRequest):
     token = create_access_token(req.username)
     return {"access_token": token, "username": req.username}
 
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "service": "nexchat"
+    }
 # ─────────────────────────────────────────────────────────────
 # In-memory WebSocket state
 # ─────────────────────────────────────────────────────────────
@@ -441,26 +447,35 @@ async def websocket_endpoint(websocket: WebSocket):
             data = json.loads(raw_msg)
             msg_type = data.get("type")
 
-             msg_text = data.get("message", "")
-            sig_hex = data.get("signature", "")
-            pub_key_hex = data.get("public_key", "")
+            if msg_type == "message":
+                msg_text = data.get("message", "")
+                sig_hex = data.get("signature", "")
+                pub_key_hex = data.get("public_key", "")
 
-            print(f"[DEBUG] message={msg_text!r}")
-            print(f"[DEBUG] signature length={len(sig_hex)}")
-            print(f"[DEBUG] public key length={len(pub_key_hex)}")
+                print(f"[DEBUG] message={msg_text!r}")
+                print(f"[DEBUG] signature length={len(sig_hex)}")
+                print(f"[DEBUG] public key length={len(pub_key_hex)}")
 
-            # Verify signature (authenticity check)
-            if not verify_signature(pub_key_hex, sig_hex, msg_text):
-                print(f"[!] Rejected message from {username} — invalid signature")
-                continue
+                # Verify signature
+                if not verify_signature(pub_key_hex, sig_hex, msg_text):
+                    print(f"[!] Rejected message from {username} — invalid signature")
+                    continue
 
-            # Encrypt before storing (confidentiality + integrity)
-            ciphertext_hex, nonce_hex = encrypt_message(msg_text)
-
-                # Encrypt before storing (confidentiality + integrity)
+                # Encrypt before storing
                 ciphertext_hex, nonce_hex = encrypt_message(msg_text)
                 timestamp = utc_now()
-                save_message_to_db("default", "message", username, "", ciphertext_hex, nonce_hex, sig_hex, pub_key_hex, timestamp)
+
+                save_message_to_db(
+                    "default",
+                    "message",
+                    username,
+                    "",
+                    ciphertext_hex,
+                    nonce_hex,
+                    sig_hex,
+                    pub_key_hex,
+                    timestamp
+                )
 
                 chat_msg = {
                     "type": "message",
@@ -468,24 +483,34 @@ async def websocket_endpoint(websocket: WebSocket):
                     "message": msg_text,
                     "timestamp": timestamp,
                 }
+
                 if "reply_to" in data:
                     chat_msg["reply_to"] = data["reply_to"]
+
                 await broadcast_all(chat_msg)
 
             elif msg_type == "leave":
                 if session_token in clients and clients[session_token]["websocket"] is websocket:
                     del clients[session_token]
+
                 if session_token in known_sessions:
                     del known_sessions[session_token]
 
                 ts = utc_now()
                 add_system_event("system", f"{username} left the chat", ts)
-                await broadcast_all({"type": "system", "message": f"{username} left the chat", "timestamp": ts})
+
+                await broadcast_all({
+                    "type": "system",
+                    "message": f"{username} left the chat",
+                    "timestamp": ts
+                })
+
                 await push_user_list()
 
                 if not clients:
                     last_disconnect_time = time.time()
                     _clear_room()
+
                 break
 
     except WebSocketDisconnect:
